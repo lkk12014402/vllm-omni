@@ -162,6 +162,57 @@ def test_moss_tts_seed_falls_back_to_stage_default(adapter_cls, mocker):
     assert prepared.tts_params["seed"] == [42]
 
 
+@pytest.mark.parametrize("variant,ref_text", [("local", None), ("local", "  "), ("tts", "Reference.")])
+def test_moss_tts_generation_fallback(variant, ref_text, mocker):
+    server = mocker.Mock(_moss_variant=variant)
+    server._build_moss_tts_params = mocker.AsyncMock(return_value={"prompt_token_ids": [7]})
+    request = OpenAICreateSpeechRequest(input="Target.", ref_text=ref_text)
+    adapter = MossTTSAdapter(SpeechServingContext(server=server))
+
+    prepared = asyncio.run(adapter.build(request, [], has_inline_ref_audio=True))
+
+    server._build_moss_tts_params.assert_awaited_once_with(request, has_inline_ref_audio=True)
+    server._get_moss_processor.assert_not_called()
+    assert prepared.prompt["prompt_token_ids"] == [7]
+
+
+def test_moss_local_reference_transcript_continuation(mocker):
+    import torch
+
+    reference = [torch.ones((3, 12), dtype=torch.int64)]
+    unified = torch.arange(52, dtype=torch.int64).reshape(1, 4, 13)
+    processor = mocker.Mock(return_value={"input_ids": unified})
+    server = mocker.Mock(_moss_variant="local", uploaded_speakers={"speaker": {}})
+    server._build_moss_tts_params = mocker.AsyncMock(return_value={"prompt_token_ids": [7]})
+    server._get_moss_processor.return_value = processor
+    server._voice_created_at.return_value = 123
+    server._encode_moss_references = mocker.AsyncMock(return_value=(reference, {0: "reference-key"}))
+    request = OpenAICreateSpeechRequest(
+        input="Target.", ref_text=" Reference. ", language="English", voice="Speaker", seed=0, max_new_tokens=2048
+    )
+    adapter = MossTTSAdapter(SpeechServingContext(server=server))
+
+    prepared = asyncio.run(adapter.build(request, [], has_inline_ref_audio=False))
+
+    processor.build_user_message.assert_called_once_with(text="Reference. Target.", language="English")
+    processor.build_assistant_message.assert_called_once_with(audio_codes_list=reference)
+    processor.assert_called_once_with(
+        conversations=[[processor.build_user_message.return_value, processor.build_assistant_message.return_value]],
+        mode="continuation",
+    )
+    server._encode_moss_references.assert_awaited_once_with(request, has_inline_ref_audio=False, two_speaker=False)
+    server._build_moss_tts_params.assert_not_called()
+    assert prepared.prompt["prompt_token_ids"] == unified[0, :, 0].tolist()
+    assert torch.equal(prepared.tts_params["codes"]["ref"], unified[0, :, 1:])
+    assert prepared.tts_params["max_new_frames"] == [2048]
+    assert prepared.tts_params["ref_audio_cache_key"] == "reference-key"
+    assert prepared.tts_params["voice_name"] == ["speaker"]
+    assert prepared.tts_params["voice_created_at"] == [123]
+    assert prepared.tts_params["seed"] == [0]
+    assert prepared.prompt["cache_salt"]
+    assert request.input == "Target."
+
+
 def test_qwen3_tts_metadata():
     assert Qwen3TTSAdapter.backend == "ar"
     assert issubclass(Qwen3TTSAdapter, ARTTSAdapter)

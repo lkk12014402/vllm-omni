@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """MOSS-TTS serving adapters (Nano + full family).
 
-Both variants share the same build/validate flow (``_build_moss_tts_params``
-handles each); they are registered under distinct model-type names.
+Variants share validation and request metadata. Local uses transcript-guided
+continuation when the request includes a reference transcript.
 """
 
 from typing import TYPE_CHECKING
@@ -23,6 +23,36 @@ if TYPE_CHECKING:
 
 
 class _MossTTSAdapterBase(ARTTSAdapter):
+    async def _build_local_continuation_params(
+        self, request: "OpenAICreateSpeechRequest", *, has_inline_ref_audio: bool
+    ) -> dict:
+        import torch
+
+        server = self.ctx.server
+        processor = server._get_moss_processor()
+        reference, resolve_keys = await server._encode_moss_references(
+            request, has_inline_ref_audio=has_inline_ref_audio, two_speaker=False
+        )
+        assert request.ref_text is not None
+        user_kwargs = {"text": request.ref_text.strip() + " " + (request.input or "")}
+        if request.language:
+            user_kwargs["language"] = request.language
+        # Align the reference transcript with an assistant audio prefix. Only
+        # newly generated frames go to the codec; the prefix is conditioning.
+        user = processor.build_user_message(**user_kwargs)
+        assistant = processor.build_assistant_message(audio_codes_list=reference)
+        batch = processor(conversations=[[user, assistant]], mode="continuation")
+        unified = batch["input_ids"][0]
+        params = {
+            "prompt_token_ids": unified[:, 0].tolist(),
+            "codes": {"ref": unified[:, 1:].contiguous().to(torch.int64)},
+        }
+        if request.max_new_tokens is not None:
+            params["max_new_frames"] = [request.max_new_tokens]
+        if 0 in resolve_keys:
+            params["ref_audio_cache_key"] = resolve_keys[0]
+        return params
+
     def validate(self, request: "OpenAICreateSpeechRequest") -> str | None:
         """Validate any MOSS-TTS-family request (nano + 5 full variants).
 
@@ -92,7 +122,10 @@ class _MossTTSAdapterBase(ARTTSAdapter):
         self, request: "OpenAICreateSpeechRequest", sampling_params_list: list, has_inline_ref_audio: bool
     ) -> PreparedRequest:
         server = self.ctx.server
-        tts_params = await server._build_moss_tts_params(request, has_inline_ref_audio=has_inline_ref_audio)
+        if server._moss_variant == "local" and request.ref_text and request.ref_text.strip():
+            tts_params = await self._build_local_continuation_params(request, has_inline_ref_audio=has_inline_ref_audio)
+        else:
+            tts_params = await server._build_moss_tts_params(request, has_inline_ref_audio=has_inline_ref_audio)
         if request.voice:
             voice_lower = request.voice.lower()
             if voice_lower in server.uploaded_speakers and not has_inline_ref_audio:
