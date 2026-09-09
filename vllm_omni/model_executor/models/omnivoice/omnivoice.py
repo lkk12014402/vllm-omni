@@ -74,17 +74,9 @@ class OmniVoiceMultiModalProcessor(OmniMultiModalProcessor[OmniVoiceMultiModalPr
     def apply(self, inputs: ProcessorInputs, timing_ctx):
         tokenizer = self.info.get_tokenizer()
         prompt_text = tokenizer.decode(inputs.prompt, skip_special_tokens=False)
-        prompt_inputs = self._call_hf_processor(
-            prompt_text,
-            {},
-            inputs.hf_processor_mm_kwargs,
-            {},
-        )
-        prompt_ids = prompt_inputs["input_ids"]
-        if isinstance(prompt_ids, torch.Tensor):
-            prompt_ids = prompt_ids.reshape(-1).tolist()
-        else:
-            prompt_ids = list(prompt_ids)
+        # Tokenize once here; _apply_hf_processor_main below only encodes the
+        # reference audio, so the media path never re-tokenizes the text.
+        prompt_ids = self._encode_prompt_text(prompt_text, inputs.hf_processor_mm_kwargs).reshape(-1).tolist()
         inputs = replace(
             inputs,
             prompt=prompt_ids,
@@ -122,22 +114,38 @@ class OmniVoiceMultiModalProcessor(OmniMultiModalProcessor[OmniVoiceMultiModalPr
 
         self._cached_model_dir = model_dir
 
-    def _call_hf_processor(
+    def _apply_hf_processor_main(
         self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object],
-        tok_kwargs: Mapping[str, object],
+        mm_items: MultiModalDataItems,
+        hf_processor_mm_kwargs: Mapping[str, object],
     ) -> BatchFeature:
+        """Encode the reference audio, if any; the prompt was tokenized in apply().
+
+        Upstream calls this for every request, including text-only ones and
+        ones whose audio is already cached (empty ``mm_items``), so it must not
+        touch the text tokenizer.
+        """
+        valid_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
+        mm_data, passthrough = self._get_hf_mm_data(valid_items)
+        audio = self._get_reference_audio(mm_data)
+        if audio is None:
+            return BatchFeature(dict(passthrough))
+        processed = self._encode_reference_audio(*audio)
+        processed.update(passthrough)
+        return processed
+
+    def _get_reference_audio(self, mm_data: Mapping[str, object]) -> tuple[object, int] | None:
+        audio = mm_data.get("audio", None)
+        if audio is None:
+            audios = mm_data.get("audios")
+            if audios is not None:
+                audio = audios[0], self.info.ctx.get_hf_config().sample_rate
+        return audio
+
+    def _encode_prompt_text(self, prompt: str, mm_kwargs: Mapping[str, object]) -> torch.Tensor:
         config = self.info.ctx.get_hf_config()
         model_dir = self.info.ctx.model_config.model
         self._ensure_cached_runtime_components(model_dir, config)
-
-        audio = mm_data.get("audio", None)
-        if audio is None:
-            audio = mm_data.get("audios")
-            if audio is not None:
-                audio = audio[0], config.sample_rate
 
         # Build text prompt with control tokens
         lang = mm_kwargs.get("lang", None)
@@ -161,19 +169,14 @@ class OmniVoiceMultiModalProcessor(OmniMultiModalProcessor[OmniVoiceMultiModalPr
             full_text = prompt
 
         text_prompt = f"{style_text}<|text_start|>{full_text}<|text_end|>"
-        text_tokens = self.text_tokenizer(text_prompt, return_tensors="pt").input_ids.squeeze(0)  # [N_text]
+        return self.text_tokenizer(text_prompt, return_tensors="pt").input_ids.squeeze(0)  # [N_text]
 
-        if audio is None:
-            # Text-only path (auto voice mode)
-            return BatchFeature(
-                {
-                    "input_ids": text_tokens,
-                    "input_len": [len(text_tokens)],
-                }
-            )
+    def _encode_reference_audio(self, audio_signal: object, sr: int) -> BatchFeature:
+        """Voice cloning: encode the reference audio to 8-codebook tokens."""
+        config = self.info.ctx.get_hf_config()
+        model_dir = self.info.ctx.model_config.model
+        self._ensure_cached_runtime_components(model_dir, config)
 
-        # Voice cloning: encode reference audio to tokens
-        audio_signal, sr = audio
         if isinstance(audio_signal, np.ndarray):
             audio_signal = torch.from_numpy(audio_signal).float()
         if audio_signal.dim() == 1:
@@ -194,14 +197,12 @@ class OmniVoiceMultiModalProcessor(OmniMultiModalProcessor[OmniVoiceMultiModalPr
             if ref_audio_tokens.dim() == 3:
                 ref_audio_tokens = ref_audio_tokens.squeeze(0)  # [8, T_ref]
 
-        ft = BatchFeature(
+        return BatchFeature(
             {
-                "input_ids": text_tokens,
                 "ref_audio_tokens": ref_audio_tokens,  # [8, T_ref]
                 "ref_audio_len": [ref_audio_tokens.shape[1]],
             }
         )
-        return ft
 
     def _get_mm_fields_config(
         self,
