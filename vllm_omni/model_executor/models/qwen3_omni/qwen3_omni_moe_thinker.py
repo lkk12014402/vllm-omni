@@ -705,47 +705,6 @@ class Qwen3OmniMoeThinkerMultiModalProcessor(
     # Preserve Omni's per-video overrides while inheriting upstream Qwen3's
     # audio processing through the shared, cooperative Qwen2.5 base.
 
-    def _maybe_apply_prompt_updates(
-        self,
-        mm_items: MultiModalDataItems,
-        prompt_ids: list[int],
-        mm_kwargs: MultiModalKwargsItems,
-        mm_prompt_updates: MultiModalPromptUpdates,
-    ) -> tuple[list[int], Mapping[str, list[PlaceholderFeaturesInfo]]]:
-        """
-        Qwen3-Omni reimplements this function to handle `use_audio_in_video`.
-        """
-        mm_item_counts = mm_items.get_all_counts()
-        self._validate_mm_kwargs(mm_kwargs, mm_item_counts)
-        self._validate_mm_updates(mm_prompt_updates, mm_item_counts)
-
-        video_use_audio_in_video = self._get_video_use_audio_in_video(mm_kwargs, mm_prompt_updates)
-        use_audio_in_video = any(video_use_audio_in_video)
-
-        if use_audio_in_video and "audio" in mm_prompt_updates:
-            filtered_updates = {k: v for k, v in mm_prompt_updates.items() if k != "audio"}
-            prompt_ids, mm_placeholders = self._apply_prompt_updates(
-                prompt_ids,
-                filtered_updates,
-            )
-            mm_placeholders = self._derive_audio_from_video_placeholders(
-                mm_placeholders,
-                mm_prompt_updates,
-                video_use_audio_in_video,
-            )
-        else:
-            prompt_ids, mm_placeholders = self._apply_prompt_updates(
-                prompt_ids,
-                mm_prompt_updates,
-            )
-
-        self._validate_mm_placeholders(
-            mm_placeholders,
-            mm_item_counts,
-        )
-
-        return prompt_ids, mm_placeholders
-
     def get_updates_use_audio_in_video(
         self,
         thinker_config: PretrainedConfig,
