@@ -78,6 +78,8 @@ def _filter_mrope_kwargs_for_model(model: object, kwargs: dict[str, Any]) -> dic
 
 
 class OmniGPUModelRunner(GPUModelRunner):
+    intermediate_tensors: IntermediateTensors | None
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.model_intermediate_buffer: dict[str, dict[str, Any]] = {}
@@ -842,7 +844,9 @@ class OmniGPUModelRunner(GPUModelRunner):
             return None
 
     @torch.inference_mode()
-    def extract_multimodal_outputs(self, hidden_states: torch.Tensor | list[torch.Tensor] | OmniOutput) -> dict:
+    def extract_multimodal_outputs(
+        self, hidden_states: torch.Tensor | list[torch.Tensor] | OmniOutput
+    ) -> tuple[Any, Any]:
         if (
             hasattr(self.model, "have_multimodal_outputs")
             and self.model.have_multimodal_outputs
@@ -1407,14 +1411,14 @@ class OmniGPUModelRunner(GPUModelRunner):
     def _process_additional_information_updates(
         self,
         hidden_states: torch.Tensor,
-        multimodal_outputs: object,
+        multimodal_outputs: Any,
         num_scheduled_tokens_np: np.ndarray,
         scheduler_output: "SchedulerOutput",
         combined_hidden_states: dict[str, torch.Tensor] | None = None,
-        combined_multimodal_outputs: dict[str, object] | None = None,
+        combined_multimodal_outputs: dict[str, Any] | None = None,
         req_ids_filter: set[str] | None = None,
         req_ids: list[str] | None = None,
-        query_start_loc_cpu: object | None = None,
+        query_start_loc_cpu: Any = None,
     ) -> None:
         """Process model-provided per-request updates and merge into model_intermediate_buffer."""
         req_ids = req_ids if req_ids is not None else self.input_batch.req_ids
@@ -1476,9 +1480,9 @@ class OmniGPUModelRunner(GPUModelRunner):
     def _collect_additional_information_for_prefill(
         self,
         num_scheduled_tokens_np: np.ndarray,
-    ) -> dict[str, dict]:
+    ) -> None:
         """Overlay per-request prompt_embeds for the prefill portion and collect
-        additional_information slices for this step. Returns a map req_id -> dict."""
+        additional_information slices for this step."""
         for req_index, req_id in enumerate(self.input_batch.req_ids):
             req_state = self.requests[req_id]
             pe_cpu = getattr(req_state, "prompt_embeds_cpu", None)
@@ -1707,9 +1711,9 @@ class OmniGPUModelRunner(GPUModelRunner):
 
             # Overlay custom prompt_embeds per request for the prompt portion;
             # collect additional_information (tensor/list) for prefill portion only
-            decode_req_ids = []
-            decode_start_offsets = []
-            decode_batch_items = []
+            decode_req_ids: list[str] = []
+            decode_start_offsets: list[int] = []
+            decode_batch_items: list[tuple[str, int, dict[str, Any]]] = []
             batch_decode_preprocess = getattr(self.model, "preprocess_decode_batch", None)
 
             def flush_decode_batch() -> None:
@@ -1717,6 +1721,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                 if not decode_batch_items:
                     return
 
+                assert callable(batch_decode_preprocess)
                 req_ids_b = [item[0] for item in decode_batch_items]
                 start_offsets_b = [item[1] for item in decode_batch_items]
                 req_infos_b = [item[2] for item in decode_batch_items]
@@ -1761,7 +1766,7 @@ class OmniGPUModelRunner(GPUModelRunner):
 
                 # mimo-audio check
                 req_state = self.requests.get(req_id)
-                req_infos = self._maybe_attach_mimo_audio_req_infos(req_state, req_infos, req_id)
+                req_infos = cast(dict[str, Any], self._maybe_attach_mimo_audio_req_infos(req_state, req_infos, req_id))
 
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 sched_tokens = int(num_scheduled_tokens_np[req_index])

@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from copy import copy
 from dataclasses import replace
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import torch
@@ -212,7 +212,7 @@ class OmniAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
         if kwargs:
             raise TypeError(f"Unexpected OmniAsyncGPUModelRunnerOutput kwargs: {sorted(kwargs)}")
 
-        self._model_runner_output = None
+        self._model_runner_output: OmniModelRunnerOutput | None = None
         self._invalid_req_indices = invalid_req_indices
 
         self.async_copy_ready_event = torch.Event()
@@ -242,7 +242,7 @@ class OmniAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
             self._num_nans_cpu = self._num_nans.to("cpu", non_blocking=True) if self._num_nans is not None else None
             self.async_copy_ready_event.record()
 
-        self._model_runner_output_builder = model_runner_output_builder
+        self._model_runner_output_builder: Callable[[], OmniModelRunnerOutput] | None = model_runner_output_builder
         self._background_exception: BaseException | None = None
         self._background_thread: threading.Thread | None = None
         self._cuda_device = cuda_device
@@ -257,6 +257,7 @@ class OmniAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
         if self._model_runner_output is not None:
             return
         with record_function_or_nullcontext("omni_async_output:get_output/build_model_runner_output"):
+            assert self._model_runner_output_builder is not None
             self._model_runner_output = self._model_runner_output_builder()
         self._model_runner_output_builder = None
 
@@ -351,6 +352,9 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
     class only overrides sample_tokens to expose hidden states + multimodal
     outputs per request while keeping Async output semantics.
     """
+
+    execute_model_state: ExecuteModelState | None
+    kv_extracted_req_ids: list[str] | None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -467,6 +471,8 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
         if not isinstance(info, dict):
             return None
         val = info.get("omni_final_stage_id")
+        if val is None:
+            return None
         try:
             return int(val)
         except (TypeError, ValueError):
@@ -1516,7 +1522,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                     )
             selected_indices.append(idx)
             selected_req_ids.append(req_id)
-            selected_req_infos.append(req_info)
+            selected_req_infos.append(cast(dict[str, Any], req_info))
 
         if not selected_indices:
             return multimodal_outputs
@@ -1583,7 +1589,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
 
     def _build_multimodal_outputs(
         self,
-        per_req_payloads: list[dict[str, object] | None] | None,
+        per_req_payloads: Sequence[dict[str, object] | None] | None,
     ) -> list[dict[str, torch.Tensor] | None] | None:
         """Build per-request multimodal output payloads (dedicated channel).
 
@@ -1679,8 +1685,8 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
 
     def _build_omni_step_outputs(
         self,
-        pooler_inter: list[dict[str, object]],
-        pooler_client: list[dict[str, object]],
+        pooler_inter: Sequence[dict[str, object] | None] | None,
+        pooler_client: Sequence[dict[str, object] | None] | None,
         *,
         defer_full_payload_d2h: bool,
     ) -> tuple[
@@ -1966,6 +1972,8 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                     )
                     pooler_output.append(flatten_payload(payload))
 
+        pooler_inter: Sequence[dict[str, object] | None] | None
+        pooler_client: Sequence[dict[str, object] | None] | None
         pooler_output = pooler_output or []
         if self._async_chunk and stage_sends_async_output(self.model_config):
             pooler_inter, pooler_client = partition_payload_list(pooler_output)
