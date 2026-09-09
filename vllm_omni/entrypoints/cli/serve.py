@@ -36,7 +36,7 @@ from vllm_omni.utils.tracking_parser import TrackingArgumentParser, TrackingName
 if TYPE_CHECKING:
     from vllm.v1.utils import APIServerProcessManager
 
-    from vllm_omni.engine.stage_runtime import MultiApiStageEngineLaunch, StageRuntime
+    from vllm_omni.engine.stage_runtime import StageEngineLaunch, StageRuntime
 
 logger = init_logger(__name__)
 
@@ -1042,6 +1042,7 @@ def _build_multi_api_stage_runtime(args: TrackingNamespace, num_api_servers: int
         model=model,
         config_path=config_path,
         stage_init_timeout=int(getattr(args, "stage_init_timeout", 300)),
+        parallel_stage_init=bool(getattr(args, "parallel_stage_init", False)),
         async_chunk=async_chunk,
         tokenizer=getattr(args, "tokenizer", None),
         log_stats=not bool(getattr(args, "disable_log_stats", False)),
@@ -1050,7 +1051,7 @@ def _build_multi_api_stage_runtime(args: TrackingNamespace, num_api_servers: int
 
 def _wait_for_multi_api_server_completion(
     api_server_manager: APIServerProcessManager,
-    engine_launch: MultiApiStageEngineLaunch,
+    engine_launch: StageEngineLaunch,
 ) -> None:
     """Wait until API workers complete or any shared stage engine fails."""
     from multiprocessing import connection

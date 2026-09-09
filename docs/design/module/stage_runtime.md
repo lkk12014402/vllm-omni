@@ -77,6 +77,15 @@ readiness, one pool per logical stage, replica identity and membership,
 selection and affinity, stage-client/process lifecycle, liveness, draining,
 and shutdown.
 
+Local EngineCore initialization and multi-API serving use
+`StageRuntime.launch_stage_engines(num_api_servers=1)` as their common launch
+entry. It resolves plans when not supplied by the runtime's device-group
+scheduler, coordinates device locks and environment overlays, starts engines,
+and rolls back resources on startup or attachment failure. Single-API clients
+attach locally after readiness and take ownership of the engine resources;
+there is no additional API subprocess. Diffusion and remote attachment retain
+their backend-specific initialization.
+
 For local multi-API serving, the parent runtime owns and launches each stage
 engine once. It supplies a distinct input/output channel for every API
 frontend and stage replica; frontend workers attach clients to those engines

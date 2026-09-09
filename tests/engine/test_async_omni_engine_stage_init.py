@@ -851,7 +851,8 @@ def test_stage_runtime_attaches_external_llm_client_without_launching_engine(mon
 
 
 @pytest.mark.parametrize("stage_ids", [(0,), (0, 1)], ids=["single-stage", "multi-stage"])
-def test_stage_runtime_launches_shared_engines_with_per_client_addresses(monkeypatch, stage_ids):
+@pytest.mark.parametrize("client_count", [1, 2])
+def test_stage_runtime_launches_shared_engines_with_per_client_addresses(monkeypatch, stage_ids, client_count):
     import vllm_omni.engine.stage_runtime as runtime_mod
 
     runtime = _make_stage_runtime()
@@ -883,18 +884,23 @@ def test_stage_runtime_launches_shared_engines_with_per_client_addresses(monkeyp
         captured_launch_env.append(os.environ.get("VLLM_OMNI_TEST_STAGE_RUNTIME_ENV"))
         yield StageReplicaResources(
             addresses=EngineZmqAddresses(
-                inputs=[f"ipc://stage{stage_id}-input-{idx}" for idx in range(2)],
-                outputs=[f"ipc://stage{stage_id}-output-{idx}" for idx in range(2)],
+                inputs=[f"ipc://stage{stage_id}-input-{idx}" for idx in range(client_count)],
+                outputs=[f"ipc://stage{stage_id}-output-{idx}" for idx in range(client_count)],
             ),
         )
         events.append(("exit", stage_id))
 
     monkeypatch.setattr(runtime_mod, "launch_stage_replica", _fake_launch_stage_replica)
 
-    with runtime.launch_stage_engines(2) as launch:
-        assert events == [("enter", stage_id) for stage_id in stage_ids]
+    with runtime.launch_stage_engines(client_count) as launch:
+        expected = (
+            [("enter", stage_id) for stage_id in stage_ids]
+            if client_count > 1
+            else [(event, stage_id) for stage_id in stage_ids for event in ("enter", "exit")]
+        )
+        assert events == expected
         for client_index, config in enumerate(launch.client_configs):
-            assert config["client_count"] == 2
+            assert config["client_count"] == client_count
             assert config["client_index"] == client_index
             for stage_id in stage_ids:
                 assert config["stage_addresses"][stage_id][0] == {
@@ -902,11 +908,14 @@ def test_stage_runtime_launches_shared_engines_with_per_client_addresses(monkeyp
                     "output_address": f"ipc://stage{stage_id}-output-{client_index}",
                 }
 
-    assert events == [(event, stage_id) for event in ("enter", "exit") for stage_id in stage_ids]
+    assert events == (
+        [(event, stage_id) for event in ("enter", "exit") for stage_id in stage_ids] if client_count > 1 else expected
+    )
     assert not hasattr(stage_plans[0].replicas[0].stage_vllm_config.parallel_config, "_api_process_count")
     assert not hasattr(stage_plans[0].replicas[0].stage_vllm_config.parallel_config, "_api_process_rank")
     assert all(
-        kwargs["watched_frontend_processes"] is launch.watched_frontend_processes for kwargs in captured_launch_kwargs
+        kwargs["watched_frontend_processes"] is (launch.watched_frontend_processes if client_count > 1 else None)
+        for kwargs in captured_launch_kwargs
     )
     assert captured_launch_env == ["enabled" if stage_id == 0 else None for stage_id in stage_ids]
     assert os.environ.get("VLLM_OMNI_TEST_STAGE_RUNTIME_ENV") is None
@@ -1285,7 +1294,7 @@ def test_initialize_local_llm_replica_passes_stage_init_timeout_to_complete_stag
         num_replicas=1,
         launch_mode="local",
         stage_cfg=types.SimpleNamespace(engine_args={}, runtime=types.SimpleNamespace(devices="0")),
-        metadata=types.SimpleNamespace(stage_id=0, runtime_cfg={"devices": "0"}),
+        metadata=types.SimpleNamespace(stage_id=0, stage_type="llm", runtime_cfg={"devices": "0"}),
         stage_connector_spec={},
         omni_kv_connector=(None, None, None),
         stage_vllm_config=fake_vllm_config,
@@ -2107,3 +2116,99 @@ def test_port_from_zmq_address_parsing():
     assert _port_from_zmq_address(None) is None
     assert _port_from_zmq_address("ipc:///tmp/sock") is None
     assert _port_from_zmq_address("tcp://host:not-a-port") is None
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("failure", ["ready", "attach", None])
+def test_single_api_common_launch_ownership_and_rollback(monkeypatch, parallel, failure):
+    import vllm_omni.engine.stage_runtime as runtime_mod
+
+    runtime = _make_stage_runtime()
+    runtime._parallel_stage_init = parallel
+    plan = _make_llm_plan(0, stage_id=0, vllm_config=_FakeVllmConfig()).replicas[0]
+    plan.engine_args_dict = {}
+    events = []
+
+    class Manager:
+        def shutdown(self):
+            events.append("shutdown")
+
+    manager = Manager()
+    addresses = EngineZmqAddresses(inputs=["ipc://input"], outputs=["ipc://output"])
+    monkeypatch.setattr(runtime, "_resolve_replica_physical_devices", lambda *_: "0")
+
+    def acquire(*_):
+        events.append("lock")
+        return [42]
+
+    monkeypatch.setattr(runtime_mod, "acquire_device_locks", acquire)
+    monkeypatch.setattr(runtime_mod, "release_device_locks", lambda _: events.append("unlock"))
+
+    @contextlib.contextmanager
+    def launch(**kwargs):
+        assert kwargs["num_api_servers"] == 1
+        assert kwargs["omni_parallel_stage_init"] is parallel
+        events.append("spawn")
+        yield StageReplicaResources(manager=manager, addresses=addresses)
+        assert runtime._replica_launch_lock.locked() is (not parallel)
+        events.append("ready")
+        if failure == "ready":
+            raise RuntimeError("ready")
+
+    def attach(**kwargs):
+        assert "ready" in events
+        assert kwargs["engine_manager"] is manager
+        events.append("attach")
+        if failure == "attach":
+            raise RuntimeError("attach")
+        return manager
+
+    monkeypatch.setattr(runtime_mod, "launch_stage_replica", launch)
+    monkeypatch.setattr(runtime_mod.StageEngineCoreClientBase, "make_async_mp_client", attach)
+    if failure:
+        with pytest.raises(RuntimeError, match=failure):
+            runtime._initialize_local_llm_replica(plan, 1)
+        assert events.count("shutdown") == 1
+    else:
+        assert runtime._initialize_local_llm_replica(plan, 1) is manager
+        assert "shutdown" not in events
+    assert events.count("lock") == events.count("unlock") == (0 if parallel else 1)
+
+
+@pytest.mark.parametrize("client_count", [1, 2])
+def test_common_launch_parallel_admission_before_spawn(monkeypatch, client_count):
+    import vllm_omni.engine.stage_runtime as runtime_mod
+
+    runtime = _make_stage_runtime()
+    runtime._parallel_stage_init = True
+    plan = _make_llm_plan(0, stage_id=0, vllm_config=_FakeVllmConfig())
+    plan.replicas[0].engine_args_dict = {}
+    events = []
+    monkeypatch.setattr(runtime, "_prepare_stage_plans", lambda: [plan])
+    monkeypatch.setattr(runtime, "_reject_unguardable_executors", lambda _: events.append("guard"))
+    monkeypatch.setattr(runtime, "_run_stage_admission", lambda _: events.append("admit"))
+    monkeypatch.setattr(runtime, "_resolve_replica_physical_devices", lambda *_: "0")
+
+    def forbidden_lock(*_):
+        pytest.fail("parallel initialization must use child phase locks")
+
+    monkeypatch.setattr(runtime_mod, "acquire_device_locks", forbidden_lock)
+
+    @contextlib.contextmanager
+    def launch(**kwargs):
+        assert events == ["guard", "admit"]
+        assert kwargs["omni_parallel_stage_init"] is True
+        events.append("spawn")
+        yield StageReplicaResources(
+            addresses=EngineZmqAddresses(
+                inputs=[f"ipc://in{i}" for i in range(client_count)],
+                outputs=[f"ipc://out{i}" for i in range(client_count)],
+            )
+        )
+        assert not runtime._replica_launch_lock.locked()
+        events.append("ready")
+
+    monkeypatch.setattr(runtime_mod, "launch_stage_replica", launch)
+    with runtime.launch_stage_engines(client_count):
+        pass
+    assert events == ["guard", "admit", "spawn", "ready"]

@@ -16,7 +16,7 @@ from vllm.v1.engine.utils import EngineZmqAddresses
 
 from vllm_omni.config.resolver import OmniConfigResolution
 from vllm_omni.engine.stage_engine_startup import StageReplicaResources
-from vllm_omni.engine.stage_runtime import MultiApiStageEngineLaunch
+from vllm_omni.engine.stage_runtime import StageEngineLaunch
 from vllm_omni.entrypoints.cli.serve import (
     OmniServeCommand,
     _parse_stage_overrides,
@@ -223,7 +223,7 @@ def test_run_multi_api_server_omni_starts_workers_after_shared_engine_launch(moc
         inputs=["ipc://input-0", "ipc://input-1"],
         outputs=["ipc://output-0", "ipc://output-1"],
     )
-    engine_launch = MultiApiStageEngineLaunch(
+    engine_launch = StageEngineLaunch(
         client_configs=[{"client_count": 2, "client_index": index, "stage_addresses": {}} for index in range(2)],
         resources=[StageReplicaResources(addresses=primary_addresses)],
     )
@@ -299,7 +299,7 @@ def test_wait_for_multi_api_server_completion_rejects_engine_failure(
     api_process = _FakeProcess(sentinel="api-0", exitcode=None, name="api-0", pid=10)
     engine_process = _FakeProcess(sentinel="engine-0", exitcode=4, name="engine-0", pid=20)
     manager = _FakeProcessOwner(processes=[api_process])
-    engine_launch = MultiApiStageEngineLaunch(
+    engine_launch = StageEngineLaunch(
         client_configs=[],
         resources=[StageReplicaResources(manager=_FakeProcessOwner(processes=[engine_process]))],
     )
