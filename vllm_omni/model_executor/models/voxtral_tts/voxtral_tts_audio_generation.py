@@ -48,11 +48,9 @@ from vllm.multimodal.parse import AudioProcessorItems, MultiModalDataItems, Mult
 from vllm.multimodal.processing import BaseDummyInputsBuilder, BaseMultiModalProcessor
 from vllm.multimodal.processing.processor import (
     BaseProcessingInfo,
-    MultiModalProcessingInfo,
     ProcessorInputs,
     PromptReplacement,
     PromptUpdate,
-    TimingContext,
 )
 from vllm.sequence import IntermediateTensors
 from vllm.tokenizers import cached_tokenizer_from_config
@@ -898,13 +896,6 @@ class VoxtralTTSMultiModalProcessor(BaseMultiModalProcessor[VoxtralTTSProcessing
             tokenization_kwargs=tokenization_kwargs,
         )
         return mm_processed_data
-
-    def _cached_apply_hf_processor(
-        self,
-        inputs: ProcessorInputs,
-        timing_ctx: TimingContext,
-    ) -> MultiModalProcessingInfo:
-        return super()._cached_apply_hf_processor(inputs, timing_ctx)
 
     def _maybe_apply_prompt_updates(
         self,
