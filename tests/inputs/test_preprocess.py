@@ -14,7 +14,8 @@ from vllm.renderers import BaseRenderer
 from vllm.renderers.params import TokenizeParams
 from vllm.v1.engine.input_processor import InputProcessor
 
-from vllm_omni.inputs.preprocess import OmniRenderer
+from vllm_omni.inputs import preprocess as preprocess_mod
+from vllm_omni.inputs.preprocess import OmniRenderer, build_omni_renderer, omni_renderer_cls
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -35,7 +36,7 @@ class _Renderer(BaseRenderer):
 
 @pytest.fixture
 def renderer():
-    return OmniRenderer(_Renderer())
+    return omni_renderer_cls(_Renderer)()
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"target_h": 512, "target_w": 768}])
@@ -55,12 +56,12 @@ def test_process_inputs_routes_no_media_processor_kwargs(renderer, kwargs, token
     processor._validate_params = Mock()
     processor._validate_lora = Mock()
     processor._validate_model_inputs = Mock()
-    prompt = {"prompt_token_ids": [1, 2, 3]} if tokenized else {"prompt": "hello"}
+    prompt: dict[str, object] = {"prompt_token_ids": [1, 2, 3]} if tokenized else {"prompt": "hello"}
     prompt.update(mm_processor_kwargs=kwargs, cache_salt="salt")
     request = processor.process_inputs("image-request", prompt, PoolingParams(), ("embed",))
     assert request.prompt_token_ids == [1, 2, 3, 99]
     assert request.cache_salt == "salt"
-    renderer._renderer._process_multimodal.assert_called_once_with(
+    renderer._process_multimodal.assert_called_once_with(
         [1, 2, 3],
         {},
         mm_processor_kwargs=kwargs,
@@ -72,7 +73,11 @@ def test_process_inputs_routes_no_media_processor_kwargs(renderer, kwargs, token
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.parametrize("kind", ["text", "tokens", "media", "kwargs", "embeds"])
 def test_renderer_preserves_routes_extras_and_cache_policy(renderer, async_mode, kind):
-    prompt = {"prompt": "hello", "additional_information": {"speaker": 1}, "model_intermediate_buffer": {"x": 2}}
+    prompt: dict[str, object] = {
+        "prompt": "hello",
+        "additional_information": {"speaker": 1},
+        "model_intermediate_buffer": {"x": 2},
+    }
     if kind == "tokens":
         prompt["prompt_token_ids"] = [1, 2, 3]
     elif kind == "media":
@@ -90,10 +95,63 @@ def test_renderer_preserves_routes_extras_and_cache_policy(renderer, async_mode,
     assert result["prompt"] == "hello"
     if kind in ("media", "kwargs"):
         assert result["prompt_token_ids"] == [1, 2, 3, 99]
-        assert renderer._renderer._process_multimodal.call_args.kwargs["skip_mm_cache"] is True
+        assert renderer._process_multimodal.call_args.kwargs["skip_mm_cache"] is True
     else:
-        renderer._renderer._process_multimodal.assert_not_called()
+        renderer._process_multimodal.assert_not_called()
         if kind == "embeds":
             torch.testing.assert_close(result["prompt_embeds"], prompt["prompt_embeds"])
         else:
             assert result["prompt_token_ids"] == [1, 2, 3]
+
+
+def test_omni_renderer_is_a_real_subclass_created_once():
+    cls = omni_renderer_cls(_Renderer)
+    assert issubclass(cls, OmniRenderer) and issubclass(cls, _Renderer)
+    assert omni_renderer_cls(_Renderer) is cls
+    assert omni_renderer_cls(cls) is cls
+    assert cls.__name__ == "Omni_Renderer"
+    instance = cls()
+    assert isinstance(instance, _Renderer)
+    assert not hasattr(instance, "_renderer")
+
+
+def test_concrete_renderer_overrides_are_not_suppressed():
+    """The old proxy bound BaseRenderer.render_cmpl itself and hid subclass overrides."""
+
+    class _Custom(_Renderer):
+        def render_cmpl(self, prompts, *args, **kwargs):
+            return ["custom"]
+
+    assert omni_renderer_cls(_Custom)().render_cmpl([{"prompt": "x"}]) == ["custom"]
+
+
+class _CtorRenderer(BaseRenderer):
+    def __init__(self, config, tokenizer):
+        self.config = config
+        self.tokenizer = tokenizer
+
+    def render_messages(self, messages, params):
+        raise NotImplementedError
+
+
+def test_build_omni_renderer_with_explicit_class_skips_registry(monkeypatch):
+    monkeypatch.setattr(preprocess_mod, "cached_tokenizer_from_config", Mock(side_effect=AssertionError("resolved")))
+    config = SimpleNamespace(model_config=SimpleNamespace())
+    built = build_omni_renderer(config, renderer_cls=_CtorRenderer, tokenizer=None)
+    assert isinstance(built, OmniRenderer) and isinstance(built, _CtorRenderer)
+    assert built.config is config and built.tokenizer is None
+
+
+def test_build_omni_renderer_resolves_like_upstream(monkeypatch):
+    config = SimpleNamespace(model_config=SimpleNamespace())
+    tokenizer = object()
+    monkeypatch.setattr(
+        preprocess_mod, "cached_tokenizer_from_config", lambda mc: tokenizer if mc is config.model_config else None
+    )
+    monkeypatch.setattr(preprocess_mod, "tokenizer_args_from_config", lambda mc: ("fake-mode", None))
+    load_cls = Mock(return_value=_CtorRenderer)
+    monkeypatch.setattr(preprocess_mod.RENDERER_REGISTRY, "load_renderer_cls", load_cls)
+    built = build_omni_renderer(config)
+    load_cls.assert_called_once_with("fake-mode")
+    assert isinstance(built, OmniRenderer) and isinstance(built, _CtorRenderer)
+    assert built.tokenizer is tokenizer

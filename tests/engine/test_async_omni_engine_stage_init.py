@@ -1593,22 +1593,34 @@ def test_model_path_resolver_is_generic_and_model_owned(tmp_path):
     assert "model_path_resolver" not in engine_args
 
 
-def test_build_stage0_input_processor_wraps_active_renderer(monkeypatch):
-    import vllm_omni.engine.stage_init_utils as init_mod
-    from vllm_omni.inputs.preprocess import OmniRenderer
+def test_build_stage0_input_processor_uses_omni_renderer_subclass(monkeypatch):
+    from vllm.renderers import BaseRenderer
 
-    original = object()
+    import vllm_omni.engine.stage_init_utils as init_mod
+    from vllm_omni.inputs.preprocess import OmniRenderer, omni_renderer_cls
+
+    class _Base(BaseRenderer):
+        def __init__(self, config, tokenizer):
+            self.config, self.tokenizer = config, tokenizer
+
+        def render_messages(self, messages, params):  # pragma: no cover - abstract stub
+            raise NotImplementedError
+
+    config = types.SimpleNamespace(model_config=types.SimpleNamespace(try_get_generation_config=lambda: {}))
+    built = omni_renderer_cls(_Base)(config, "tok")
+    seen = {}
 
     class DummyInputProcessor:
         def __init__(self, vllm_config, renderer=None):
-            self.renderer = renderer or original
+            seen["renderer"] = renderer
+            self.renderer = renderer
 
     monkeypatch.setattr(init_mod, "InputProcessor", DummyInputProcessor)
-    processor = build_stage0_input_processor(
-        types.SimpleNamespace(model_config=types.SimpleNamespace(try_get_generation_config=lambda: {}))
-    )
+    monkeypatch.setattr(init_mod, "build_omni_renderer", lambda cfg: built if cfg is config else None)
+    processor = build_stage0_input_processor(config)
+    assert seen["renderer"] is built
     assert isinstance(processor.renderer, OmniRenderer)
-    assert processor.renderer._renderer is original
+    assert isinstance(processor.renderer, _Base)
     assert not hasattr(processor, "input_preprocessor")
 
 
@@ -1622,13 +1634,17 @@ def test_build_stage0_input_processor_does_not_resolve_tokenizer_when_skipped(mo
             assert renderer is original
             self.renderer = renderer
 
+    def _must_not_resolve(_cfg):
+        raise AssertionError("tokenizer must not be resolved when skip_tokenizer_init=True")
+
     monkeypatch.setattr(init_mod, "InputProcessor", DummyInputProcessor)
     monkeypatch.setattr(init_mod, "_build_token_only_renderer", lambda _: original)
+    monkeypatch.setattr(init_mod, "build_omni_renderer", _must_not_resolve)
     config = types.SimpleNamespace(
         model_config=types.SimpleNamespace(skip_tokenizer_init=True, try_get_generation_config=lambda: {})
     )
     processor = build_stage0_input_processor(config)
-    assert processor.renderer._renderer is original
+    assert processor.renderer is original
 
 
 def test_inject_kv_stage_info_infers_sender_tp_topology():
