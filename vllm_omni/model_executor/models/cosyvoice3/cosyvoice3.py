@@ -25,7 +25,6 @@ from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
 from vllm.multimodal.parse import MultiModalDataItems, MultiModalDataParser
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
-    BaseMultiModalProcessor,
     BaseProcessingInfo,
     ProcessorInputs,
     PromptIndexTargets,
@@ -39,6 +38,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import random_sample
 from vllm.v1.sample.sampler import Sampler
 
 from vllm_omni.data_entry_keys import EmbeddingsStruct, OmniPayloadStruct, to_dict, to_struct
+from vllm_omni.inputs.mm_processor import OmniMultiModalProcessor
 from vllm_omni.model_executor.models.cosyvoice3.tokenizer import get_qwen_tokenizer
 from vllm_omni.model_executor.models.cosyvoice3.utils import (
     concat_text_with_prompt_ids,
@@ -109,9 +109,7 @@ class CosyVoice3MultiModalProcessingInfo(BaseProcessingInfo):
         )
 
 
-class CosyVoice3MultiModalProcessor(BaseMultiModalProcessor[CosyVoice3MultiModalProcessingInfo]):
-    _OMNI_PROMPT_TEXT_KEY = "_vllm_omni_original_prompt_text"
-
+class CosyVoice3MultiModalProcessor(OmniMultiModalProcessor[CosyVoice3MultiModalProcessingInfo]):
     def apply(self, inputs: ProcessorInputs, timing_ctx):
         tokenizer = self.info.get_tokenizer()
         prompt_text = tokenizer.decode(inputs.prompt, skip_special_tokens=False)
@@ -404,24 +402,6 @@ class CosyVoice3MultiModalProcessor(BaseMultiModalProcessor[CosyVoice3MultiModal
         )
 
         return ft
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        mm_kwargs = dict(hf_processor_mm_kwargs)
-        prompt_text = str(mm_kwargs.pop(self._OMNI_PROMPT_TEXT_KEY, ""))
-        valid_mm_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
-        mm_data, passthrough_data = self._get_hf_mm_data(valid_mm_items)
-        processed_data = self._call_hf_processor(
-            prompt_text,
-            mm_data,
-            mm_kwargs,
-            {},
-        )
-        processed_data.update(passthrough_data)
-        return processed_data
 
     def _get_mm_fields_config(
         self,

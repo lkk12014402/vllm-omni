@@ -43,6 +43,34 @@ _FEAT_DIM = 128
 _CHUNK_FRAMES = 3000
 
 
+@pytest.mark.parametrize("version", [(2, 5), (4, 5)])
+def test_prompt_batching_delegates_upstream_without_tts_kwargs(version):
+    from unittest.mock import MagicMock
+
+    info = SimpleNamespace(
+        get_model_version=lambda: version,
+        get_hf_processor=MagicMock(return_value=object()),
+        ctx=SimpleNamespace(call_hf_processor=MagicMock()),
+    )
+    info.ctx.call_hf_processor.side_effect = (
+        [{"features": [1]}, {"features": [2]}] if version == (2, 5) else [{"features": [1, 2]}]
+    )
+    kwargs = {"use_tts": True, "sampling_rate": 16000}
+    result = MiniCPMO45OmniLLMMultiModalProcessor._call_hf_processor_on_prompts(
+        SimpleNamespace(info=info), ["one", "two"], {"audios": [10, 20]}, kwargs, out_keys={"features"}
+    )
+    assert result == {"features": [1, 2]}
+    assert kwargs == {"use_tts": True, "sampling_rate": 16000}
+    for call in info.ctx.call_hf_processor.call_args_list:
+        assert call.args[2] == {"sampling_rate": 16000}
+    payloads = [call.args[1] for call in info.ctx.call_hf_processor.call_args_list]
+    assert payloads == (
+        [{"text": "one", "audios": 10}, {"text": "two", "audios": 20}]
+        if version == (2, 5)
+        else [{"text": ["one", "two"], "audios": [10, 20]}]
+    )
+
+
 class TestMiniCPMOFieldConfig:
     def test_short_audios_stay_batched(self) -> None:
         # two <=30s audios: one feature entry + one 1-element lens per audio

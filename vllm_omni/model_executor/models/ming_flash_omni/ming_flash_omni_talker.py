@@ -22,6 +22,7 @@ from transformers import AutoTokenizer, Qwen2Config, Qwen2Model
 from transformers.utils.hub import cached_file
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper
 from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.custom_process_mixin import CustomProcessMixin
@@ -30,7 +31,6 @@ from vllm_omni.model_executor.models.common.ming.aggregator import Aggregator
 from vllm_omni.model_executor.models.common.ming.audio_vae import AudioVAE, AudioVAEConfig
 from vllm_omni.model_executor.models.ming_tts.constants import SPEAKER_EMBEDDING_DIM
 from vllm_omni.model_executor.models.output_templates import OmniOutput
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 from vllm_omni.transformers_utils.configs.ming_flash_omni import MingFlashOmniTalkerConfig
 
 from .prompt_utils import DEFAULT_PROMPT as MING_DEFAULT_PROMPT
@@ -510,12 +510,13 @@ class MingFlashOmniTalkerForConditionalGeneration(nn.Module, CustomProcessMixin)
         if self._standalone:
             weights = self._iter_talker_safetensors()
 
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=["audio_vae."],  # loaded separately
-            skip_substrs=["rotary_embed.inv_freq"],  # non-persistent buffer
+        loader = AutoWeightsLoader(self)
+        loaded = loader.load_weights(
+            weights,
+            mapper=WeightsMapper(
+                orig_to_new_prefix={"audio_vae.": None}, orig_to_new_substr={"rotary_embed.inv_freq": None}
+            ),
         )
-        loaded = loader.load_weights(weights)
         logger.info("Loaded %d talker weights from checkpoint", len(loaded))
 
         if self.audio_vae is not None and self._vae_weight_source is not None:

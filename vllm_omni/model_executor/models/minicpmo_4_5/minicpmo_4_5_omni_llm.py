@@ -21,7 +21,6 @@ import inspect
 import math
 import os
 import warnings
-from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -3596,29 +3595,15 @@ class MiniCPMO45OmniLLMMultiModalProcessor(BaseMultiModalProcessor[MiniCPMO45Omn
         *,
         out_keys: set[str],
     ) -> dict[str, NestedTensors]:
-        mm_kwargs = {k: v for k, v in mm_kwargs.items() if k != "use_tts"}
-        # This processor supports zipping prompt and mm_data together
-        if self.info.get_model_version() in {(2, 6), (4, 0), (4, 5)}:
-            inputs = self.info.ctx.call_hf_processor(
-                self.info.get_hf_processor(**mm_kwargs),
-                dict(text=prompts, **mm_data),
-                mm_kwargs,
-            )
-        else:
-            inputs = defaultdict[str, list[torch.Tensor]](list)
+        from vllm.model_executor.models.minicpmv import MiniCPMVMultiModalProcessor
 
-            for i, prompt in enumerate(prompts):
-                inputs_one = self.info.ctx.call_hf_processor(
-                    self.info.get_hf_processor(**mm_kwargs),
-                    dict(text=prompt, **{key: value[i] for key, value in mm_data.items()}),
-                    mm_kwargs,
-                )
-
-                for k, v in inputs_one.items():
-                    assert len(v) == 1, (k, len(v))
-                    inputs[k].append(v[0])
-
-        return {k: inputs[k] for k in out_keys}
+        return MiniCPMVMultiModalProcessor._call_hf_processor_on_prompts(
+            self,
+            prompts,
+            mm_data,
+            {key: value for key, value in mm_kwargs.items() if key != "use_tts"},
+            out_keys=out_keys,
+        )
 
     def _get_prompt_updates(
         self,

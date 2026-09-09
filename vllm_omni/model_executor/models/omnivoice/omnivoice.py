@@ -29,7 +29,6 @@ from vllm.multimodal.inputs import (
 from vllm.multimodal.parse import MultiModalDataItems, MultiModalDataParser
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
-    BaseMultiModalProcessor,
     BaseProcessingInfo,
     ProcessorInputs,
     PromptIndexTargets,
@@ -38,6 +37,7 @@ from vllm.multimodal.processing import (
 )
 from vllm.sequence import IntermediateTensors
 
+from vllm_omni.inputs.mm_processor import OmniMultiModalProcessor
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.platforms import current_omni_platform
 from vllm_omni.transformers_utils.configs.omnivoice import OmniVoiceConfig
@@ -64,14 +64,12 @@ class OmniVoiceMultiModalProcessingInfo(BaseProcessingInfo):
         )
 
 
-class OmniVoiceMultiModalProcessor(BaseMultiModalProcessor[OmniVoiceMultiModalProcessingInfo]):
+class OmniVoiceMultiModalProcessor(OmniMultiModalProcessor[OmniVoiceMultiModalProcessingInfo]):
     """Processes text + optional reference audio for OmniVoice.
 
     For voice cloning: text + reference audio → tokenized reference
     For auto voice: text only
     """
-
-    _OMNI_PROMPT_TEXT_KEY = "_vllm_omni_original_prompt_text"
 
     def apply(self, inputs: ProcessorInputs, timing_ctx):
         tokenizer = self.info.get_tokenizer()
@@ -204,24 +202,6 @@ class OmniVoiceMultiModalProcessor(BaseMultiModalProcessor[OmniVoiceMultiModalPr
             }
         )
         return ft
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        mm_kwargs = dict(hf_processor_mm_kwargs)
-        prompt_text = str(mm_kwargs.pop(self._OMNI_PROMPT_TEXT_KEY, ""))
-        valid_mm_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
-        mm_data, passthrough_data = self._get_hf_mm_data(valid_mm_items)
-        processed_data = self._call_hf_processor(
-            prompt_text,
-            mm_data,
-            mm_kwargs,
-            {},
-        )
-        processed_data.update(passthrough_data)
-        return processed_data
 
     def _get_mm_fields_config(
         self,

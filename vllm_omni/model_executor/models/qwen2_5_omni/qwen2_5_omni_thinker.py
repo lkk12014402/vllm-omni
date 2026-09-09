@@ -63,6 +63,7 @@ from vllm.model_executor.models.qwen2_audio import (
     _get_feat_extract_output_lengths,
 )
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     WeightsMapper,
     init_vllm_registered_model,
     maybe_prefix,
@@ -87,7 +88,6 @@ from vllm.multimodal.processing.processor import (
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 from vllm_omni.quantization.component_config import (
     resolve_encoder_quant_config,
 )
@@ -1398,11 +1398,12 @@ class Qwen2_5OmniThinkerForConditionalGeneration(
         if self.visual is None:
             skip_prefixes.extend(["visual."])
 
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=skip_prefixes,
+        loader = AutoWeightsLoader(self)
+        loaded_weights = loader.load_weights(
+            weights,
+            mapper=(self.hf_to_vllm_mapper)
+            | WeightsMapper(orig_to_new_prefix={name: None for name in (skip_prefixes or ())}),
         )
-        loaded_weights = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
         return loaded_weights
 

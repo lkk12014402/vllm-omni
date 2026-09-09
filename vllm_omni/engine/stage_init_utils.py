@@ -54,7 +54,7 @@ from vllm_omni.engine.arg_utils import OmniEngineArgs
 from vllm_omni.entrypoints.stage_utils import _to_dict, set_stage_devices
 from vllm_omni.entrypoints.utils import filter_dataclass_kwargs
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniSamplingParams
-from vllm_omni.inputs.preprocess import OmniInputPreprocessor
+from vllm_omni.inputs.preprocess import OmniRenderer
 from vllm_omni.outputs.output_processor import MultimodalOutputProcessor
 from vllm_omni.platforms import current_omni_platform
 from vllm_omni.quantization.inc_config import OmniINCConfig
@@ -1563,10 +1563,7 @@ def build_stage0_input_processor(stage_vllm_config: Any) -> InputProcessor:
         )
     else:
         input_processor = InputProcessor(vllm_config=stage_vllm_config)
-    input_processor.input_preprocessor = OmniInputPreprocessor(
-        vllm_config=stage_vllm_config,
-        renderer=input_processor.renderer,
-    )
+    input_processor.renderer = OmniRenderer(input_processor.renderer)
     return input_processor
 
 

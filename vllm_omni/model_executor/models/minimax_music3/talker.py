@@ -37,10 +37,10 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.model_executor.models.qwen3 import Qwen3Model
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper
 from vllm.v1.outputs import SamplerOutput
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 
 from .chunking import chunk_windows
 from .constants import (
@@ -980,8 +980,10 @@ class MiniMaxMusic3TalkerForConditionalGeneration(nn.Module):
         through vLLM. The audio embedding table and the depth decoder live in
         a separate component of the repo and are loaded explicitly.
         """
-        loader = AutoWeightsLoader(self, skip_prefixes=["audio_embeddings.", "rvq_decoder."])
-        loaded = loader.load_weights(weights)
+        loader = AutoWeightsLoader(self)
+        loaded = loader.load_weights(
+            weights, mapper=WeightsMapper(orig_to_new_prefix={"audio_embeddings.": None, "rvq_decoder.": None})
+        )
         loaded |= load_depth_decoder_weights(
             self.vllm_config,
             audio_embeddings=self.audio_embeddings,

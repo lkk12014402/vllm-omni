@@ -22,13 +22,12 @@ import torch.nn as nn
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.model_executor.models.qwen3_5 import Qwen3_5ForCausalLM
-from vllm.model_executor.models.utils import maybe_prefix
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, maybe_prefix
 from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.gepard.configuration_gepard import GepardConfig
 from vllm_omni.model_executor.models.gepard.nanocodec import NanoCodec
 from vllm_omni.model_executor.models.output_templates import OmniOutput
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 from vllm_omni.platforms import current_omni_platform
 
 logger = init_logger(__name__)
@@ -200,8 +199,10 @@ class GepardTalkerForConditionalGeneration(nn.Module):
 
         # NanoCodec loads lazily on first decode, so load_format=dummy and
         # NeMo-less environments never pay for it.
-        loader = AutoWeightsLoader(self, skip_prefixes=["mtp.", "ref_compressor."])
-        return loader.load_weights(iter(rest))
+        loader = AutoWeightsLoader(self)
+        return loader.load_weights(
+            iter(rest), mapper=WeightsMapper(orig_to_new_prefix={"mtp.": None, "ref_compressor.": None})
+        )
 
     def _get_or_create_state(self, request_id: str) -> _GepardState:
         st = self._active_states.get(request_id)

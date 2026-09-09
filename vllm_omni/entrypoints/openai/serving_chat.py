@@ -702,7 +702,7 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
                 if negative_prompt is not None:
                     tprompt["negative_prompt"] = negative_prompt
                 # Always attach mm_processor_kwargs (possibly empty) so
-                # OmniInputPreprocessor._process_text routes through the
+                # OmniRenderer routes through the
                 # multimodal processor path. Without it, the preprocessor
                 # falls back to plain _tokenize_prompt and AR-based image-gen
                 # models like GLM-Image never see their image-generation

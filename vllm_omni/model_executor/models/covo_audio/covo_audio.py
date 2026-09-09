@@ -20,7 +20,6 @@ from vllm.multimodal.inputs import MultiModalFieldConfig
 from vllm.multimodal.parse import MultiModalDataItems, MultiModalDataParser
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
-    BaseMultiModalProcessor,
     BaseProcessingInfo,
     ProcessorInputs,
     PromptReplacement,
@@ -29,6 +28,7 @@ from vllm.multimodal.processing import (
 from vllm.sequence import IntermediateTensors
 from vllm.v1.sample.metadata import SamplingMetadata
 
+from vllm_omni.inputs.mm_processor import OmniMultiModalProcessor
 from vllm_omni.model_executor.custom_process_mixin import CustomProcessMixin
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.model_executor.models.utils import add_prefix_to_loaded_weights
@@ -109,7 +109,7 @@ class CovoAudioDummyInputsBuilder(BaseDummyInputsBuilder[CovoAudioProcessingInfo
         )
 
 
-class CovoAudioMultiModalProcessor(BaseMultiModalProcessor[CovoAudioProcessingInfo]):
+class CovoAudioMultiModalProcessor(OmniMultiModalProcessor[CovoAudioProcessingInfo]):
     def _hf_processor_applies_updates(self, prompt_text, mm_items, hf_processor_mm_kwargs, tokenization_kwargs) -> bool:
         return False
 
@@ -154,22 +154,6 @@ class CovoAudioMultiModalProcessor(BaseMultiModalProcessor[CovoAudioProcessingIn
             },
             tensor_type=None,
         )
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        valid_mm_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
-        mm_data, passthrough_data = self._get_hf_mm_data(valid_mm_items)
-        processed_data = self._call_hf_processor(
-            self.dummy_inputs.get_dummy_text(mm_items.get_all_counts()),
-            mm_data,
-            hf_processor_mm_kwargs,
-            {},
-        )
-        processed_data.update(passthrough_data)
-        return processed_data
 
     def _get_mm_fields_config(
         self,

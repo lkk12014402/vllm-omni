@@ -21,7 +21,9 @@ from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead, 
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader, maybe_remap_kv_scale_name
 from vllm.model_executor.models.interfaces import SupportsLoRA, SupportsPP
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     PPMissingLayer,
+    WeightsMapper,
     is_pp_missing_parameter,
     make_empty_intermediate_tensors_factory,
     make_layers,
@@ -32,8 +34,6 @@ from vllm.v1.attention.backend import AttentionType
 from vllm.v1.outputs import SamplerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler
-
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 
 logger = init_logger(__name__)
 
@@ -445,8 +445,8 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         return next_tokens
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
+        loader = AutoWeightsLoader(self)
+        return loader.load_weights(
+            weights,
+            mapper=WeightsMapper(orig_to_new_prefix={"lm_head.": None} if self.config.tie_word_embeddings else {}),
         )
-        return loader.load_weights(weights)

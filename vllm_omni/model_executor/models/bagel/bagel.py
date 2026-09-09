@@ -21,6 +21,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.bagel import BagelForConditionalGeneration
 from vllm.model_executor.models.interfaces import MultiModalEmbeddings
 from vllm.model_executor.models.qwen2 import Qwen2DecoderLayer, Qwen2MLP
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (
     MultiModalFieldConfig,
@@ -53,7 +54,6 @@ from vllm_omni.diffusion.models.bagel.bagel_transformer import (
     TimestepEmbedder,
 )
 from vllm_omni.diffusion.models.bagel.pipeline_bagel import default_ae_params
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 
 
 class OmniBagelProcessor(BagelProcessor):
@@ -1164,11 +1164,12 @@ class OmniBagelForConditionalGeneration(BagelForConditionalGeneration):
             filtered_weights.append((mapped_name, tensor))
 
         loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=["vit_pos_embed.pos_embed"],
-            ignore_unexpected_prefixes=["vae.", "latent_pos_embed.", "time_embedder.", "vae2llm."],
+            self, ignore_unexpected_prefixes=["vae.", "latent_pos_embed.", "time_embedder.", "vae2llm."]
         )
-        loaded = loader.load_weights(filtered_weights, mapper=self.hf_to_vllm_mapper)
+        loaded = loader.load_weights(
+            filtered_weights,
+            mapper=(self.hf_to_vllm_mapper) | WeightsMapper(orig_to_new_prefix={"vit_pos_embed.pos_embed": None}),
+        )
 
         loaded |= self._load_moe_gen_weights(moe_gen_weights)
 

@@ -15,6 +15,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsPP,
 )
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     WeightsMapper,
     maybe_prefix,
 )
@@ -29,7 +30,6 @@ from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_code_predictor_mt
 from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_thinker import (
     Qwen3MoeLLMForCausalLM,
 )
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 from vllm_omni.quantization.component_config import ComponentQuantizationConfig
 
 logger = init_logger(__name__)
@@ -302,13 +302,12 @@ class Qwen3OmniMoeTalkerForConditionalGeneration(
         to vLLM's internal structure. Code predictor weights are routed
         to its custom loader for vocab extension support.
         """
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=["thinker.", "code2wav."],
-            # "code_predictor."],
-        )
+        loader = AutoWeightsLoader(self)
         # Don't apply mapper again since we already did it
-        loaded = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        loaded = loader.load_weights(
+            weights,
+            mapper=(self.hf_to_vllm_mapper) | WeightsMapper(orig_to_new_prefix={"thinker.": None, "code2wav.": None}),
+        )
 
         # Log load summary
         try:

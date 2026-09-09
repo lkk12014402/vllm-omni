@@ -39,7 +39,6 @@ from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
 from vllm.multimodal.parse import MultiModalDataItems, MultiModalDataParser
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
-    BaseMultiModalProcessor,
     BaseProcessingInfo,
     ProcessorInputs,
     PromptIndexTargets,
@@ -51,6 +50,7 @@ from vllm.v1.outputs import SamplerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler
 
+from vllm_omni.inputs.mm_processor import OmniMultiModalProcessor
 from vllm_omni.model_executor.models.common.nucleus_ras_sampling import ras_sample_one as _ras_sample_one
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.platforms import current_omni_platform
@@ -364,7 +364,7 @@ class GLMTTSMultiModalProcessingInfo(BaseProcessingInfo):
         )
 
 
-class GLMTTSMultiModalProcessor(BaseMultiModalProcessor[GLMTTSMultiModalProcessingInfo]):
+class GLMTTSMultiModalProcessor(OmniMultiModalProcessor[GLMTTSMultiModalProcessingInfo]):
     """GLM-TTS voice-clone processor.
 
     Unlike CosyVoice3, GLM-TTS prompt speech tokens are normal Llama vocab IDs
@@ -372,8 +372,6 @@ class GLMTTSMultiModalProcessor(BaseMultiModalProcessor[GLMTTSMultiModalProcessi
     the AR prompt and also carries WhisperVQ/CampPlus outputs to the AR->DiT
     handoff.
     """
-
-    _OMNI_PROMPT_TEXT_KEY = "_vllm_omni_original_prompt_text"
 
     def apply(self, inputs: ProcessorInputs, timing_ctx):
         source_tokenizer = self.info.get_tokenizer()
@@ -629,24 +627,6 @@ class GLMTTSMultiModalProcessor(BaseMultiModalProcessor[GLMTTSMultiModalProcessi
                 "glm_tts_text_token_len": [torch.tensor([int(text_ids.shape[1])], dtype=torch.long)],
             }
         )
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        mm_kwargs = dict(hf_processor_mm_kwargs)
-        prompt_text = str(mm_kwargs.pop(self._OMNI_PROMPT_TEXT_KEY, ""))
-        valid_mm_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
-        mm_data, passthrough_data = self._get_hf_mm_data(valid_mm_items)
-        processed_data = self._call_hf_processor(
-            prompt_text,
-            mm_data,
-            mm_kwargs,
-            {},
-        )
-        processed_data.update(passthrough_data)
-        return processed_data
 
     def _get_mm_fields_config(
         self,

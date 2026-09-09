@@ -32,7 +32,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig
-from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeConfig,
     Qwen3OmniMoeThinkerConfig,
@@ -94,9 +93,13 @@ from vllm.model_executor.models.qwen3_omni_moe_thinker import (
     Qwen3OmniMoeAudioEncoderLayer as _Qwen3OmniMoeAudioEncoderLayer,
 )
 from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+    Qwen3OmniMoeThinkerMultiModalProcessor as _UpstreamQwen3Processor,
+)
+from vllm.model_executor.models.qwen3_omni_moe_thinker import (
     _get_feat_extract_output_lengths,
 )
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     WeightsMapper,
     _merge_multimodal_embeddings,
     maybe_prefix,
@@ -125,7 +128,6 @@ from vllm_omni.model_executor.models.qwen2_5_omni.qwen2_5_omni_thinker import (
 from vllm_omni.model_executor.models.qwen3_omni.quantization import (
     Qwen3OmniNestedSupportsQuant,
 )
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 from vllm_omni.quantization.component_config import (
     PRE_QUANTIZED_METHODS,
     ComponentQuantizationConfig,
@@ -698,83 +700,10 @@ Qwen3OmniMoeThinkerDummyInputsBuilder = Qwen2_5OmniThinkerDummyInputsBuilder
 
 class Qwen3OmniMoeThinkerMultiModalProcessor(
     Qwen2_5OmniThinkerMultiModalProcessor,
+    _UpstreamQwen3Processor,
 ):
-    def _get_hf_mm_data(
-        self,
-        mm_items: MultiModalDataItems,
-    ) -> tuple[Mapping[str, object], Mapping[str, object]]:
-        processor_data, passthrough_data = super()._get_hf_mm_data(mm_items)
-
-        audios = processor_data.get("audios")
-        if audios:
-            feature_extractor = self.info.get_feature_extractor()
-            hop_length = feature_extractor.hop_length
-
-            def pad_to_hop_length(x: np.ndarray) -> np.ndarray:
-                length = x.shape[-1]
-                if length % hop_length != 0:
-                    pad_length = hop_length - (length % hop_length)
-                    x = np.pad(
-                        x,
-                        (0, pad_length),
-                        mode="constant",
-                        constant_values=0,
-                    )
-                return x
-
-            # To make sure the cache works with padding=True, pre-pad audio
-            # to a multiple of the feature extractor's hop length.
-            processor_data = dict(processor_data)
-            processor_data["audios"] = [
-                pad_to_hop_length(audio) if isinstance(audio, np.ndarray) else (pad_to_hop_length(audio[0]), audio[1])
-                for audio in audios
-            ]
-
-        return processor_data, passthrough_data
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        if mm_items.get_all_counts().get("audio", 0):
-            # TODO(Isotr0py): Remove this patch after upstream fix PR
-            # released and Transformers version update:
-            # https://github.com/huggingface/transformers/pull/41473
-            hf_processor_mm_kwargs = dict(hf_processor_mm_kwargs)
-            hf_processor_mm_kwargs["audio_kwargs"] = dict(hf_processor_mm_kwargs.get("audio_kwargs") or {})
-            hf_processor_mm_kwargs["text_kwargs"] = dict(hf_processor_mm_kwargs.get("text_kwargs") or {})
-
-        processed_data = super()._apply_hf_processor_main(
-            mm_items,
-            hf_processor_mm_kwargs,
-        )
-
-        if "audio_feature_lengths" in processed_data and "feature_attention_mask" in processed_data:
-            valid_mm_items = mm_items.select({k for k, c in mm_items.get_all_counts().items() if c > 0})
-            processor_data, _ = self._get_hf_mm_data(valid_mm_items)
-            audios = processor_data.get("audios", [])
-            if audios:
-                feature_extractor = self.info.get_feature_extractor(**hf_processor_mm_kwargs)
-                hop_length = feature_extractor.hop_length
-
-                audio_num_frames = []
-                for audio in audios:
-                    audio_length = len(audio[0]) if isinstance(audio, tuple) else len(audio)
-                    num_frame = (
-                        audio_length // hop_length if audio_length % hop_length == 0 else audio_length // hop_length - 1
-                    )
-                    if hf_processor_mm_kwargs.get("truncation", False):
-                        num_frame = min(
-                            num_frame,
-                            feature_extractor.n_samples // hop_length,
-                        )
-                    audio_num_frames.append(num_frame)
-
-                processed_data["feature_attention_mask"] = [torch.ones(num_frame) for num_frame in audio_num_frames]
-                processed_data["audio_feature_lengths"] = torch.tensor(audio_num_frames)
-
-        return processed_data
+    # Preserve Omni's per-video overrides while inheriting upstream Qwen3's
+    # audio processing through the shared, cooperative Qwen2.5 base.
 
     def _maybe_apply_prompt_updates(
         self,
@@ -1518,11 +1447,11 @@ class Qwen3OmniMoeThinkerForConditionalGeneration(
         return self.language_model.compute_logits(hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=["talker.", "code2wav."],
+        loader = AutoWeightsLoader(self)
+        loaded_weights = loader.load_weights(
+            weights,
+            mapper=(self.hf_to_vllm_mapper) | WeightsMapper(orig_to_new_prefix={"talker.": None, "code2wav.": None}),
         )
-        loaded_weights = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
         return loaded_weights
 

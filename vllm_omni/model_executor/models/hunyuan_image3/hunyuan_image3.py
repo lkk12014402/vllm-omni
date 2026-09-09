@@ -54,7 +54,9 @@ from vllm.model_executor.models.interfaces import (
     _require_is_multimodal,
 )
 from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
     PPMissingLayer,
+    WeightsMapper,
     _merge_multimodal_embeddings,
     is_pp_missing_parameter,
     maybe_prefix,
@@ -70,7 +72,6 @@ from vllm.multimodal.parse import (
 )
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
-    BaseMultiModalProcessor,
     BaseProcessingInfo,
     PromptReplacement,
     PromptUpdate,
@@ -83,6 +84,7 @@ from vllm.v1.outputs import SamplerOutput
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler
 
+from vllm_omni.inputs.mm_processor import OmniMultiModalProcessor
 from vllm_omni.model_executor.models.hunyuan_image3._hunyuan_v1_vendored import (
     HunYuanMLP,
     HunYuanModel,
@@ -92,7 +94,6 @@ from vllm_omni.model_executor.models.hunyuan_image3._hunyuan_v1_vendored import 
 )
 from vllm_omni.model_executor.models.hunyuan_image3.autoencoder_kl_3d import AutoencoderKLConv3D
 from vllm_omni.model_executor.models.hunyuan_image3.siglip2 import LightProjector, Siglip2VisionTransformer
-from vllm_omni.model_executor.models.weight_loader import AutoWeightsLoader
 
 logger = init_logger(__name__)
 
@@ -1027,7 +1028,7 @@ class HunyuanImage3DummyInputsBuilder(BaseDummyInputsBuilder[HunyuanImage3Proces
         }
 
 
-class HunyuanImage3MultiModalProcessor(BaseMultiModalProcessor[HunyuanImage3ProcessingInfo]):
+class HunyuanImage3MultiModalProcessor(OmniMultiModalProcessor[HunyuanImage3ProcessingInfo]):
     """Multimodal processor for HunyuanImage3 model."""
 
     def _call_hf_processor(
@@ -1045,22 +1046,6 @@ class HunyuanImage3MultiModalProcessor(BaseMultiModalProcessor[HunyuanImage3Proc
         if vae_generator_seed is not None and images:
             batch_feature["vae_generator_seed"] = torch.full((len(images),), int(vae_generator_seed), dtype=torch.long)
         return batch_feature
-
-    def _apply_hf_processor_main(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        valid_mm_items = mm_items.select({key for key, count in mm_items.get_all_counts().items() if count > 0})
-        mm_data, passthrough_data = self._get_hf_mm_data(valid_mm_items)
-        processed_data = self._call_hf_processor(
-            self.dummy_inputs.get_dummy_text(mm_items.get_all_counts()),
-            mm_data,
-            hf_processor_mm_kwargs,
-            {},
-        )
-        processed_data.update(passthrough_data)
-        return processed_data
 
     def _hf_processor_applies_updates(
         self,
@@ -2196,12 +2181,11 @@ class HunyuanImage3ForConditionalGeneration(nn.Module, SupportsMultiModal, Suppo
             "timestep_r_emb",
         ]
         skip_prefixes.extend(unexpected_keywords)
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=skip_prefixes,
-        )
+        loader = AutoWeightsLoader(self)
 
-        loaded_params = loader.load_weights(weights)
+        loaded_params = loader.load_weights(
+            weights, mapper=WeightsMapper(orig_to_new_prefix={name: None for name in (skip_prefixes or ())})
+        )
         return loaded_params
 
     def get_language_model(self) -> torch.nn.Module:

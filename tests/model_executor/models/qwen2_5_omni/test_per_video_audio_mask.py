@@ -620,10 +620,17 @@ def test_derive_audio_from_video_placeholders_only_pairs_true_videos():
 
 
 def test_qwen3_processor_inherits_vllm_omni_per_video_helpers():
+    from vllm.model_executor.models.qwen3_omni_moe_thinker import (
+        Qwen3OmniMoeThinkerMultiModalProcessor as UpstreamQwen3Processor,
+    )
+
     assert issubclass(
         Qwen3OmniMoeThinkerMultiModalProcessor,
         Qwen2_5OmniThinkerMultiModalProcessor,
     )
+    assert Qwen3OmniMoeThinkerMultiModalProcessor._get_hf_mm_data is UpstreamQwen3Processor._get_hf_mm_data
+    mro = Qwen3OmniMoeThinkerMultiModalProcessor.__mro__
+    assert mro.index(Qwen2_5OmniThinkerMultiModalProcessor) < mro.index(UpstreamQwen3Processor)
 
 
 def test_qwen3_prompt_updates_prefer_hf_second_per_grid_ts_from_outputs():
