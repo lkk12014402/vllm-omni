@@ -646,15 +646,6 @@ class GLMTTSMultiModalProcessor(OmniMultiModalProcessor[GLMTTSMultiModalProcessi
             if key in hf_inputs
         }
 
-    def _hf_processor_applies_updates(
-        self,
-        prompt_text: str,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-        tokenization_kwargs: Mapping[str, object],
-    ) -> bool:
-        return False
-
     def _cached_apply_hf_processor(self, inputs: ProcessorInputs, timing_ctx: Any):
         # GLM-TTS builds the actual AR prompt from both the request text and
         # mm_processor_kwargs["prompt_text"]. The base cache path separates text

@@ -110,9 +110,6 @@ class CovoAudioDummyInputsBuilder(BaseDummyInputsBuilder[CovoAudioProcessingInfo
 
 
 class CovoAudioMultiModalProcessor(OmniMultiModalProcessor[CovoAudioProcessingInfo]):
-    def _hf_processor_applies_updates(self, prompt_text, mm_items, hf_processor_mm_kwargs, tokenization_kwargs) -> bool:
-        return False
-
     def _call_hf_processor(
         self, prompt: str, mm_data: Mapping[str, object], mm_kwargs: Mapping[str, Any], tok_kwargs: Mapping[str, object]
     ) -> BatchFeature:
