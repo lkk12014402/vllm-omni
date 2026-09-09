@@ -157,7 +157,7 @@ class StageRuntime:
         self,
         stage_configs: list[Any],
         model: str,
-        config_path: str,
+        config_path: str | None,
         *,
         stage_init_timeout: int,
         async_chunk: bool,
@@ -362,11 +362,11 @@ class StageRuntime:
             )
 
         client_configs: list[OmniClientConfig] = [
-            {
-                "client_count": num_api_servers,
-                "client_index": client_index,
-                "stage_addresses": {},
-            }
+            OmniClientConfig(
+                client_count=num_api_servers,
+                client_index=client_index,
+                stage_addresses={},
+            )
             for client_index in range(num_api_servers)
         ]
         entered_contexts: list[AbstractContextManager[StageReplicaResources]] = []
@@ -425,8 +425,13 @@ class StageRuntime:
                     entered_contexts.append(launch_context)
                     resources.append(stage_resources)
                     addresses = stage_resources.addresses
+                    # The generic resource bundle allows no addresses (e.g.
+                    # diffusion), but EngineCore attachment requires them.
                     if addresses is None:
                         raise RuntimeError(f"LLM stage {plan.stage_id} launcher returned no addresses")
+                    # Unlike the single-client handshake, only stage 0 is
+                    # handed to APIServerProcessManager for address updates.
+                    # Other stages must already expose connectable endpoints.
                     if any(
                         address.startswith("tcp://") and address.rsplit(":", 1)[-1] == "0"
                         for address in (*addresses.inputs, *addresses.outputs)
@@ -1239,7 +1244,7 @@ class DistStageRuntime(StageRuntime):
         self,
         stage_configs: list[Any],
         model: str,
-        config_path: str,
+        config_path: str | None,
         *,
         stage_init_timeout: int,
         async_chunk: bool,
@@ -1576,7 +1581,7 @@ class DistStageRuntime(StageRuntime):
 def create_stage_runtime(
     stage_configs: list[Any],
     model: str,
-    config_path: str,
+    config_path: str | None,
     *,
     single_stage_mode: bool,
     stage_init_timeout: int,

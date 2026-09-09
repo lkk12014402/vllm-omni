@@ -17,7 +17,7 @@ import math
 import os
 import signal
 from types import FrameType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import uvloop
 from vllm.entrypoints.cli.types import CLISubcommand
@@ -30,6 +30,7 @@ from vllm_omni.entrypoints.openai.api_server import (
     omni_run_server,
     run_omni_api_server_worker_proc,
 )
+from vllm_omni.entrypoints.utils import parse_stage_overrides, prepare_stage_config_inputs
 from vllm_omni.utils.tracking_parser import TrackingArgumentParser, TrackingNamespace
 
 if TYPE_CHECKING:
@@ -57,6 +58,17 @@ Search by using: `--help=<ConfigGroup>` to explore options by section (e.g.,
 --help=OmniConfig)
   Use `--help=all` to show all available flags at once.
 """
+
+
+def _parse_stage_overrides(value: str) -> dict[str, dict[str, Any]]:
+    """Adapt shared stage-override validation to argparse's error type."""
+    try:
+        parsed = parse_stage_overrides(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if parsed is None:
+        raise argparse.ArgumentTypeError("--stage-overrides requires a JSON object")
+    return parsed
 
 
 def _nonneg_finite_float(value: str) -> float:
@@ -334,7 +346,7 @@ class OmniServeCommand(CLISubcommand):
         )
         omni_config_group.add_argument(
             "--stage-overrides",
-            type=str,
+            type=_parse_stage_overrides,
             default=None,
             help="Per-stage JSON overrides. Example: "
             '\'{"0": {"gpu_memory_utilization": 0.8}, "2": {"enforce_eager": true}}\'',
@@ -983,11 +995,8 @@ class OmniServeCommand(CLISubcommand):
 
 def _build_multi_api_stage_runtime(args: TrackingNamespace, num_api_servers: int) -> StageRuntime:
     """Resolve the local EngineCore stages that the parent process owns."""
+    from vllm_omni.config.resolver import resolve_omni_config
     from vllm_omni.engine.stage_runtime import StageRuntime
-    from vllm_omni.entrypoints.utils import (
-        load_and_resolve_stage_configs,
-        prepare_stage_config_inputs,
-    )
 
     kwargs = args.get_explicit_kwargs_dict()
     model = kwargs.pop("model", None) or args.model
@@ -1003,14 +1012,17 @@ def _build_multi_api_stage_runtime(args: TrackingNamespace, num_api_servers: int
     )
     model = config_inputs.model
     kwargs = config_inputs.kwargs
-    config_path, stage_configs, _ = load_and_resolve_stage_configs(
+    resolved = resolve_omni_config(
         model,
-        kwargs,
+        cli_overrides=kwargs,
         trust_remote_code=config_inputs.trust_remote_code,
         deploy_config_path=config_inputs.deploy_config_path,
         stage_overrides=config_inputs.stage_overrides,
         strategy_config_path=config_inputs.strategy_config_path,
     )
+
+    config_path = resolved.config_path
+    stage_configs = list(resolved.stage_configs)
 
     sleep_stages = [
         int(getattr(stage_config, "stage_id", stage_index))
@@ -1179,6 +1191,7 @@ def run_headless(args: TrackingNamespace) -> None:
     from vllm.v1.executor.multiproc_executor import MultiprocExecutor
     from vllm.version import __version__ as VLLM_VERSION
 
+    from vllm_omni.config.resolver import resolve_omni_config
     from vllm_omni.distributed.omni_connectors.utils.initialization import resolve_omni_kv_config_for_stage
     from vllm_omni.engine.stage_engine_startup import (
         get_headless_replica_devices,
@@ -1193,7 +1206,6 @@ def run_headless(args: TrackingNamespace) -> None:
         load_omni_transfer_config_for_model,
         prepare_engine_environment,
     )
-    from vllm_omni.entrypoints.utils import load_and_resolve_stage_configs, prepare_stage_config_inputs
 
     model = args.model
     stage_id: int | None = args.stage_id
@@ -1227,34 +1239,33 @@ def run_headless(args: TrackingNamespace) -> None:
             "master server.",
             args.replica_id,
         )
+        args_dict.pop("replica_id")
 
     config_inputs = prepare_stage_config_inputs(
         model,
         args_dict,
+        # store_true cannot express an explicit False: absent maps to None
+        # ("not specified") so the deploy yaml's per-stage value applies.
         trust_remote_code=getattr(args, "trust_remote_code", None) or None,
     )
-    model = config_inputs.model
     args_dict = config_inputs.kwargs
-
-    config_path, stage_configs, _ = load_and_resolve_stage_configs(
+    resolved = resolve_omni_config(
         model,
-        args_dict,
         trust_remote_code=config_inputs.trust_remote_code,
+        cli_overrides=args_dict,
         deploy_config_path=config_inputs.deploy_config_path,
         stage_overrides=config_inputs.stage_overrides,
         strategy_config_path=config_inputs.strategy_config_path,
     )
+    config_path = resolved.config_path
+    stage_configs = list(resolved.stage_configs)
 
-    # Locate the stage config that matches stage_id.
-    stage_cfg = None
-    for cfg in stage_configs:
-        if cfg.stage_id == stage_id:
-            stage_cfg = cfg
-            break
-    if stage_cfg is None:
+    try:
+        stage_cfg = resolved.stage_by_id(stage_id)
+    except KeyError:
         raise ValueError(
             f"No stage config found for stage_id={stage_id}. Available stage ids: {[c.stage_id for c in stage_configs]}"
-        )
+        ) from None
 
     prepare_engine_environment()
     per_replica_devices = get_headless_replica_devices(stage_cfg, stage_id, omni_dp_size_local)
@@ -1269,7 +1280,7 @@ def run_headless(args: TrackingNamespace) -> None:
             omni_master_port=omni_master_port,
             omni_dp_size_local=omni_dp_size_local,
             per_replica_devices=per_replica_devices,
-            config_path=config_path,
+            config_path=cast(str, config_path),
             replica_bind_address=omni_replica_address,
         )
         return
