@@ -341,6 +341,30 @@ class GlmImageDummyInputsBuilder(BaseDummyInputsBuilder[GlmImageProcessingInfo])
         }
 
 
+_GLM_IMAGE_GRID_FACTOR = 32
+
+
+def _build_target_shape_scaffold(processor, *, height: int, width: int, is_text_to_image: bool) -> str:
+    """Return the grid scaffold HF appends to a GLM-Image generation prompt.
+
+    Mirrors ``GlmImageProcessor._build_prompt_with_target_shape`` (identical in
+    transformers 5.13 and 5.14) using only the processor's public token
+    attributes, so this does not depend on a private HF method that a stub or
+    a future release may not provide.
+    """
+    factor = _GLM_IMAGE_GRID_FACTOR
+    token_h = (height // factor * factor) // factor
+    token_w = (width // factor * factor) // factor
+    grid_bos, grid_eos, bos = processor.grid_bos_token, processor.grid_eos_token, processor.bos_token
+    scaffold = f"{grid_bos}{token_h} {token_w}{grid_eos}"
+    if is_text_to_image:
+        ratio = token_h / token_w
+        prev_token_h = int(math.sqrt(ratio) * (factor // 2))
+        prev_token_w = int(math.sqrt(1 / ratio) * (factor // 2))
+        scaffold += f"{grid_bos}{prev_token_h} {prev_token_w}{grid_eos}"
+    return scaffold + bos
+
+
 class GlmImageMultiModalProcessor(BaseMultiModalProcessor[GlmImageProcessingInfo]):
     """
     Multimodal processor for GLM-Image.
@@ -374,12 +398,13 @@ class GlmImageMultiModalProcessor(BaseMultiModalProcessor[GlmImageProcessingInfo
 
         processor = self.info.get_hf_processor()
         tokenizer = self.info.get_tokenizer()
-        # Reuse HF's shape formatter without decoding/re-tokenizing the user's
-        # tokens. Text-to-image needs both target and preview grids; i2i needs
-        # only the target. Grid metadata alone does not supply these AR tokens.
+        # Append HF's target-shape scaffold without decoding/re-tokenizing the
+        # user's tokens. Text-to-image needs both target and preview grids; i2i
+        # needs only the target. Grid metadata alone does not supply these AR
+        # tokens.
         target_grid = self._build_generation_grids(inputs.hf_processor_mm_kwargs)[0]
-        suffix, *_ = processor._build_prompt_with_target_shape(
-            "",
+        suffix = _build_target_shape_scaffold(
+            processor,
             height=int(target_grid[1]) * 32,
             width=int(target_grid[2]) * 32,
             is_text_to_image=num_images == 0,

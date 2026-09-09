@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Unit tests for GLM-Image AR model: DataParser, processor, and M-RoPE."""
 
 import importlib.util
@@ -94,18 +94,15 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 @pytest.mark.parametrize("num_images", [0, 1, 2])
 @pytest.mark.parametrize("preformatted", [False, True])
 def test_generation_prompt_ids_preserve_hf_target_scaffold(num_images, preformatted):
-    from functools import partial
     from types import SimpleNamespace
 
-    from transformers.models.glm_image.processing_glm_image import GlmImageProcessor
     from vllm.multimodal.parse import MultiModalDataItems
     from vllm.multimodal.processing import BaseMultiModalProcessor, ProcessorInputs
 
     processor = object.__new__(GlmImageMultiModalProcessor)
-    symbols = SimpleNamespace(grid_bos_token="<sop>", grid_eos_token="<eop>", bos_token="<image_start>")
-    hf_processor = SimpleNamespace(
-        _build_prompt_with_target_shape=partial(GlmImageProcessor._build_prompt_with_target_shape, symbols)
-    )
+    # Only the public token attributes of GlmImageProcessor are needed; the
+    # expected suffix below is what HF's own formatter produces for 512x768.
+    hf_processor = SimpleNamespace(grid_bos_token="<sop>", grid_eos_token="<eop>", bos_token="<image_start>")
     tokenizer = SimpleNamespace(encode=lambda text, **kwargs: list(text.encode()))
     processor.info = SimpleNamespace(
         get_tokenizer=lambda: tokenizer,
