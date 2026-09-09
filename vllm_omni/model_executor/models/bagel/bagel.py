@@ -256,61 +256,6 @@ class OmniBagelMultiModalProcessor(BaseMultiModalProcessor[OmniBagelProcessingIn
             "pixel_values_img2img": MultiModalFieldConfig.batched("img2img"),
         }
 
-    def _call_hf_processor(
-        self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object],
-        tok_kwargs: Mapping[str, object],
-    ) -> "BatchFeature":
-        has_image = "images" in mm_data
-        has_img2img = "pixel_values_img2img" in mm_data
-
-        if has_img2img and self.IMG2IMG_PLACEHOLDER not in prompt:
-            prompt = f"{self.IMG2IMG_PLACEHOLDER}{prompt}"
-
-        if has_image and has_img2img:
-            outputs = BatchFeature()
-
-            img_data = dict(mm_data)
-            if "pixel_values_img2img" in img_data:
-                del img_data["pixel_values_img2img"]
-            kwargs_img = dict(mm_kwargs)
-            kwargs_img["is_img2img"] = False
-            out_img = super()._call_hf_processor(prompt, img_data, kwargs_img, tok_kwargs)
-            if "pixel_values" in out_img:
-                outputs["pixel_values"] = out_img["pixel_values"]
-            for k, v in out_img.items():
-                if k != "pixel_values":
-                    outputs[k] = v
-
-            img2img_data = dict(mm_data)
-            if "images" in img2img_data:
-                del img2img_data["images"]
-            img2img_data["images"] = img2img_data.pop("pixel_values_img2img")
-            kwargs_img2img = self._mm_kwargs_for_bagel_img2img_hf(mm_kwargs)
-            kwargs_img2img["is_img2img"] = True
-            out_img2img = super()._call_hf_processor(prompt, img2img_data, kwargs_img2img, tok_kwargs)
-            if "pixel_values" in out_img2img:
-                outputs["pixel_values_img2img"] = out_img2img["pixel_values"]
-            for k, v in out_img2img.items():
-                if k not in outputs:
-                    outputs[k] = v
-
-            return outputs
-
-        elif has_img2img:
-            mm_data = dict(mm_data)
-            mm_data["images"] = mm_data.pop("pixel_values_img2img")
-            mm_kwargs = self._mm_kwargs_for_bagel_img2img_hf(mm_kwargs)
-            mm_kwargs["is_img2img"] = True
-            outputs = super()._call_hf_processor(prompt, mm_data, mm_kwargs, tok_kwargs)
-            if "pixel_values" in outputs:
-                outputs["pixel_values_img2img"] = outputs.pop("pixel_values")
-            return outputs
-
-        return super()._call_hf_processor(prompt, mm_data, mm_kwargs, tok_kwargs)
-
     def _apply_hf_processor_main(
         self,
         mm_items: MultiModalDataItems,

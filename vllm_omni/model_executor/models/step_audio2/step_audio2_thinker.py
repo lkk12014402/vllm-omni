@@ -561,44 +561,6 @@ class StepAudio2MultiModalProcessor(BaseMultiModalProcessor[StepAudio2Processing
             )
         ]
 
-    def _call_hf_processor(
-        self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object] | None = None,
-        tok_kwargs: Mapping[str, object] | None = None,
-        **_: object,
-    ):
-        """Call HF processor and post-process outputs"""
-        mm_data = dict(mm_data)
-        audios = mm_data.pop("audios", [])
-
-        mm_kwargs = mm_kwargs or {}
-        tok_kwargs = tok_kwargs or {}
-
-        # CRITICAL: Ensure audios is ALWAYS a list to prevent string iteration
-        if audios:
-            if isinstance(audios, str):
-                mm_data["audio"] = [audios]
-            elif isinstance(audios, (list, tuple)):
-                mm_data["audio"] = audios
-            else:
-                mm_data["audio"] = [audios]
-
-        hf_inputs = super()._call_hf_processor(
-            prompt=prompt,
-            mm_data=mm_data,
-            mm_kwargs=mm_kwargs,
-            tok_kwargs=tok_kwargs,
-        )
-
-        if "audio_mels" not in hf_inputs:
-            hf_inputs["audio_mels"] = torch.empty((0, 128, 0))
-        if "audio_lens" not in hf_inputs:
-            hf_inputs["audio_lens"] = torch.tensor([], dtype=torch.int32)
-
-        return hf_inputs
-
     def _preprocess_hf_mm_data(
         self,
         mm_data: Mapping[str, object],
